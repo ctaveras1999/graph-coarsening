@@ -12,32 +12,36 @@ from tqdm import tqdm
 from CoarsenTools import parse_dataset, load_data
 import torch 
 
+methods = ["MGC", "WGC", 'KGPC', 'GPC'] #"SGC"]#"WGC", "KGPC", "GPC"]
+datasets = ['IMDB-BINARY'] #['ENZYMES']# ['MSRC_9', 'MUTAG', 'PTC_MR']
 
-# datasets = ["tumblr_ct1", "PROTEINS", "MUTAG", "IMDB-BINARY", "ENZYMES", "PTC_MR", "MSRC_9"]
-# methods =  ["Jin_Multi", "Jin_Spectral", "Chen_GW", "Our_Spectral", "Our_Iter"] 
-methods = ["Jin_Spectral", "Chen_GW", "Our_Spectral", "Our_Iter"]#, "Our_Iter"] # ["Jin_Multi"] ["Jin_Spectral", "Chen_GW", 'Our_Spectral']
-# datasets = ["tumblr_ct1"]# ["MSRC_9"]
-datasets = ["PTC_MR"]
+# FIX WGC, GPC!! 
 
 if __name__ == "__main__":
-    # dataset_num, method_num = 0, 0
-    # dataset_name = datasets[dataset_num]
-    base = './'
-    folder = 'dataset_exp1_2'
-
-    sample = load_data(datasets[0], methods[0], base, folder, True)
-    is_seq = isinstance(sample[0][0], list) or isinstance(sample[0][0], np.ndarray)
-    seq_len = len(sample[0][0])
-
-    num_dists_comp = (len(methods), len(sample[0]), seq_len) if is_seq else (len(methods), len(sample[0]))
+    base = '../..'
+    folder = 'coarsened_final'
     
     for i, dataset_name in enumerate(datasets):
+        print(dataset_name)
         A, P, X, _ = load_data(dataset_name, "Original", base, False)
+        is_seq = isinstance(A[0], list) or isinstance(A[0], np.ndarray)
+        seq_len = len(A) 
+        Ac,_,_,_,_ = load_data(dataset_name, methods[0], base, folder, True)
+        seq_len = len(Ac[0])
+
         Ms = [MeasureNetwork(*x) for x in zip(A,P,X)]
+        num_dists_comp = (len(methods), len(A), seq_len) if is_seq else (len(methods), len(len(A)))
         all_dists = torch.zeros(num_dists_comp)
 
+        # print("Shape:", all_dists.shape)
+
         for j, method_name in enumerate(methods): 
-            Ac,Pc,Xc,Q,labels = load_data(dataset_name, method_name, './', folder, True)
+            Ac,Pc,Xc,Q,labels = load_data(dataset_name, method_name, base, folder, True)
+            # print(Ac[0])
+            # for ac, xc in zip(Ac[18], Xc[18]):
+                # print(method_name, ac.shape, xc.shape, len(Ac[18]), len(Xc[18]))
+            # print(Ac[18][0])
+            # print(Ac[18][1])
             if not is_seq: 
                 Mcs = [MeasureNetwork(*x) for x in zip(Ac,Pc,Xc)]
                 for k, (m, mc, q) in enumerate(zip(Ms, Mcs, Q)): 
@@ -49,6 +53,7 @@ if __name__ == "__main__":
                     all_dists[j, k] = dist 
             else: 
                 for k in range(len(Ac)):
+                    # print(j,k,Ac[k][0].shape, Pc[k][0].shape, Xc[k][0].shape)
                     Ms_Qs = [[MeasureNetwork(*m) , q] for (m,q) in zip(zip(Ac[k], Pc[k], Xc[k]), Q[k])]
                     m = Ms[k]
                     for l, (mc, q) in enumerate(Ms_Qs): 
@@ -58,6 +63,9 @@ if __name__ == "__main__":
                             mc = m.transform(q_prime) # to make fairer comparison, compare adjacencies
                         assert(torch.abs(1 - torch.sum(tran)) < 1e-4)
                         dist = m.distortion(mc, tran)
+                        # print(j,k,l)
                         all_dists[j,k,l] = dist
 
-            np.save(f'./dists_{dataset_name}_exp1', all_dists.numpy()) 
+        if not os.path.isdir('results'):
+            os.mkdir('results')
+        np.save(f'./results/dists_{dataset_name}', all_dists.numpy()) 

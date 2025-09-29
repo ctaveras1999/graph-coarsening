@@ -22,16 +22,16 @@ def parse_dataset(dir, DS):
 
     am = [np.array(sps.csr_matrix.todense(x.astype(np.float64))) for x in As]
     am_corrected = []
-    label_corrected = []
+    label_corrected = labels
     N = len(am)
-    for i in range(N):
-        d = sum(am[i], 0)
-        if not np.any(d == 0):
-            am_corrected.append((am[i]>0).astype(float))
-            label_corrected.append(labels[i])
-            # node_label_corrected.append(node_labels[i])
+    am_corrected, _, Xs = process(am, None)
+    # for i in range(N):
+    #     d = sum(am[i], 0)
+    #     if not np.any(d == 0):
+    #         am_corrected.append((am[i]>0).astype(float))
+    #         label_corrected.append(labels[i])
+    #         # node_label_corrected.append(node_labels[i])
 
-    Xs = [None] * len(am_corrected)
     node_label_corrected = None
 
     return am_corrected, Xs, label_corrected, node_label_corrected
@@ -40,8 +40,7 @@ def load_data(dataset_name, method_name, base='../../', folder='dataset_coarse',
     if method_name != "Original":
         base = os.path.join(base, folder)
         base = os.path.join(base, dataset_name, method_name) 
-        print("Current Working Directory:")
-        print(os.getcwd())
+        print(f"Current Working Directory: {os.getcwd()}")
         print()
         n = len([x for x in os.listdir(base) if "A_" in x]) 
         A_file = os.path.join(base, f'A_{n}.npy') 
@@ -94,13 +93,13 @@ def process(As, Xs=None):
 def get_opts(method, redu_factor):
     if method == 0: # Jin (MGC) 
         opts = [redu_factor, 0, 1, 1, False] # coarse_mode, normalization_mode=2, seq=False, trans=False, means_type=1, verbose=False, seed=1
-    elif method == 1: # Zeng (KGC)
+    elif method == 1: # Jin (SGC)
         opts = [redu_factor, 4, 1, 1, False] # n_coarse, coarse_mode, normalization_mode=2, levels=None, trans=False, means_type=1, verbose=False, seed=1)
-    elif method == 2: # Jin (SGC)
+    elif method == 2: # Chen (KGC)
         opts = [redu_factor, 2, 1, 1, False] #  coarse_mode, levels=None, trans=False, means_type=1, verbose=False, seed=1
-    elif method == 3: # Spectral
+    elif method == 3: # KGPC
         opts = [redu_factor, 3, 1, 1, False] #  n_coarse, coarse_mode, means_type=1, seed=1, verbose=False)
-    elif method == 4: # Iterative 
+    elif method == 4: # GPC 
         opts = [redu_factor, 1, 1, 1, False] 
     else: 
         raise(ValueError) 
@@ -117,6 +116,8 @@ def node_fn(levels, n_min, n_max):
 
 coarsen = lambda G, opts: G.coarsen(node_fn(opts[0], 2, G.num_nodes), *opts[1:])
 
+# Have to fix 
+
 def coarsen_mat(M, opts):
     res, Q = coarsen(MeasureNetwork(*M), opts)
     if isinstance(res, list) or isinstance(res, tuple):
@@ -127,20 +128,25 @@ def coarsen_mat(M, opts):
             Xs.append(m.feat.detach().numpy())
             res = As, Ps, Xs, Q
     else: 
-        # print(f"Type = {type(res)}")
         assert(isinstance(res, MeasureNetwork))
         res = res.graph.detach().numpy(), res.prob.detach().numpy(), res.feat.detach().numpy(), Q
     return res
 
 
-def coarsen_data(data, dataset_name, method, method_name, redu_factor, cpus, base_dir='./dataset_coarse'):
-    # methods = 1) Jin et al, 2) Chen et al, 3) ours iterative, 4) ours k-means
+def coarsen_data(data, dataset_name, method, redu_factor, cpus, base_dir='./dataset_coarse'):
+    # methods = 
+    # 0 
+    # 1) Jin et al, 2) Chen et al, 3) ours iterative, 4) ours k-means
+    # methods = ['', '', '', '', '', '']
+    methods = ["MGC", "SGC", "WGC", "KGPC", "GPC"]
+    
     As, Xs, graph_labels, _ = data # get connected component?
     
     num_graphs = len(As)
     Ps = [None] * num_graphs 
     opts = get_opts(method, redu_factor)
     opts_list = [opts] * len(As) 
+    method_name = methods[method]
 
     with multiprocessing.Pool(cpus) as pool:
         res = pool.starmap(coarsen_mat, zip(zip(As, Ps, Xs), opts_list)) # change back! 

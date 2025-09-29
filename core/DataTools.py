@@ -15,6 +15,8 @@ from pygkernels.cluster import KKMeans
 from sklearn.cluster import KMeans
 import laplacian 
 import copy 
+from sklearn.utils._testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
 
 def true_trans(Q, mu=None):
     if mu is None:
@@ -179,7 +181,7 @@ def get_trans(m_net, vi, vf):
 Coarsening Methods
 """
 
-def multilevel_graph_coarsening(M, n_coarses, **kawgs):
+def MGC(M, n_coarses, **kawgs):
     is_sequence = isinstance(n_coarses, np.ndarray) or isinstance(n_coarses, list) or isinstance(n_coarses, torch.Tensor)
     if is_sequence:
         Ms, Qs = [], []
@@ -190,6 +192,12 @@ def multilevel_graph_coarsening(M, n_coarses, **kawgs):
     n = M.num_nodes
     Gi = M.graph.detach().numpy()
     Q = np.eye(n)
+
+    if is_sequence and n in n_coarses:
+        for i in n_coarses:
+            if n == i:
+                Ms.append(M.transform(Q))
+                Qs.append(lift_Q(Q))
 
     while n >= k: 
         stop_flag = 0
@@ -222,8 +230,10 @@ def multilevel_graph_coarsening(M, n_coarses, **kawgs):
         n -= 1
 
         if is_sequence and n in n_coarses:
-            Ms.append(M.transform(Q))
-            Qs.append(lift_Q(Q))
+            for i in n_coarses:
+                if n == i:
+                    Ms.append(M.transform(Q))
+                    Qs.append(lift_Q(Q))
 
     Mi = M.transform(Q)
     Q2 = torch.tensor(lift_Q(Q), dtype=torch.float32)
@@ -231,12 +241,11 @@ def multilevel_graph_coarsening(M, n_coarses, **kawgs):
     if not is_sequence:
         return Mi, Q2
     else:
-        print(len(Ms), len(n_coarses))
         assert(len(Ms) == len(n_coarses))
         return Ms, Qs
 
     
-def weighted_graph_coarsening(M, n_coarses, seed=42, n_init=10, 
+def WGC(M, n_coarses, seed=42, n_init=10, 
         sample_weight=None, init='k-means++', h_init=None, tol_empty=False):
     # S: the similarity mtx
     # n: the targeted number of clusters
@@ -252,13 +261,13 @@ def weighted_graph_coarsening(M, n_coarses, seed=42, n_init=10,
 
     if k >= N: 
         Q = np.eye(N) 
-        return M, Q/N # S, Q, Q2idx(Q) 
+        return M, Q/N
 
     def cluster(m):
         kmeans = KKMeans(n_clusters=m, n_init=n_init, init=init, 
                                         init_measure='inertia', random_state=seed) 
         idx = kmeans.predict(S, A=h_init, sample_weight=sample_weight, tol_empty=tol_empty) 
-        if idx is None:
+        if idx is None: 
             print("specified initialization failed. turn to kmeans++") 
             kmeans = KKMeans(n_clusters=m, n_init=n_init, init="k-means++", 
                                         init_measure='inertia', random_state=seed) 
@@ -273,11 +282,12 @@ def weighted_graph_coarsening(M, n_coarses, seed=42, n_init=10,
         res = cluster(k)
 
     else:
-        Ms, Qs = list(zip(*[cluster(m) for m in n_coarses]))
+        Ms, Qs = list(zip(*[cluster(ni) for ni in n_coarses]))
         res = Ms, Qs 
 
     return res
 
+@ignore_warnings(category=ConvergenceWarning)
 def KGPC(m_net, n_coarse, cluster_mode=1, seed=1):
     num_nodes = m_net.num_nodes
     heuristic_sorted, common_neighbors_sorted_idx = sorted_heuristic(m_net, cluster_mode)
@@ -323,7 +333,7 @@ def KGPC(m_net, n_coarse, cluster_mode=1, seed=1):
     return Mc, Q2
 
 # def GPC(measure_net, n_coarse, seq=False, verbose=False, means_type=1): # GPC
-def GPC(measure_net, n_coarses, verbose=False, means_type=1):
+def GPC(M, n_coarses, verbose=False, means_type=1):
     is_sequence = isinstance(n_coarses, np.ndarray) or isinstance(n_coarses, list) or isinstance(n_coarses, torch.Tensor)
     if is_sequence:
         Ms, Qs = [], []
@@ -331,34 +341,44 @@ def GPC(measure_net, n_coarses, verbose=False, means_type=1):
     else:
         k = int(n_coarses)
 
-    n = measure_net.num_nodes
-    ni = measure_net.num_nodes
-    Mi = measure_net
+    n = M.num_nodes
+    Mi = M
     
     Q = np.eye(n) # n x n, (n x k) (k x k - 1)
 
-    while ni > k:
+    if is_sequence and n in n_coarses:
+        for i in n_coarses:
+            if n == i:
+                Ms.append(M.transform(Q))
+                Qs.append(lift_Q(Q))
+
+    while n > k:
         best_idxs = sorted_heuristic(Mi, means_type)[1][0]
         vi, vf = int(torch.min(best_idxs)), int(torch.max(best_idxs))
         assert(vi != vf)
         if verbose:
             print(f"Merging nodes {vi} and {vf}")
-        Q_curr = merge_two_nodes(ni, vi, vf)
+        Q_curr = merge_two_nodes(n, vi, vf)
         Q = np.dot(Q, Q_curr) 
 
         Mi = extract_from_mat(Mi, vi, vf)     # update measure net    
-        ni -= 1 
+        n -= 1 
 
-        if is_sequence and (ni in n_coarses):
-            Ms.append(Mi)
-            Qs.append(Q)
+        if is_sequence and n in n_coarses:
+            for i in n_coarses:
+                if n == i:
+                    Ms.append(M.transform(Q))
+                    Qs.append(lift_Q(Q))
 
-    Q2 = true_trans((torch.tensor(Q) > 0).to(torch.float32), measure_net.prob.ravel())
+    Q2 = true_trans((torch.tensor(Q) > 0).to(torch.float32), M.prob.ravel())
 
-    assert((Q.shape[0] == n) and (Q.shape[1] == k))
+    # print(Q.shape, Q.shape[0], k)
+    assert((Q.shape[0] == M.num_nodes) and (Q.shape[1] == k))
     assert(torch.abs(torch.sum(Q2)-1) < 1e-6)
 
-    if is_sequence:
+    if is_sequence: 
+        print(len(Ms), len(n_coarses))
+        assert(len(Ms) == len(n_coarses))
         res = Ms, Qs
     else:
         res = Mi, Q2
@@ -400,7 +420,7 @@ def GPC(measure_net, n_coarses, verbose=False, means_type=1):
 
     # return res, Q2
 
-def spectral_graph_coarsening(mnet, n):
+def SGC(mnet, n):
     G = mnet.graph.detach().numpy()
     N = G.shape[0]
     e1, v1, e2, v2 = laplacian.spectraLaplacian_two_end_n(G, n)
@@ -449,6 +469,7 @@ class MeasureNetwork:
         if feat is None:
             self.feat = torch.zeros((self.num_nodes, 1))
         else:
+            # print(graph.shape, prob.shape, feat.shape)
             self.feat = feat.reshape(self.num_nodes, -1)
             self.feat = ensure_tensor(self.feat)
 
@@ -519,11 +540,12 @@ class MeasureNetwork:
             n_coarse = int(n_coarse)
 
         if coarse_mode == 0: # Jin Multilevel Method 
-            res = multilevel_graph_coarsening(self, n_coarse) 
+            res = MGC(self, n_coarse) 
         elif coarse_mode == 1: # Our Iterative coarsening 
             res = GPC(self, n_coarse, verbose, means_type) 
         elif coarse_mode == 2: # Chen method with signless laplacian 
-            res = weighted_graph_coarsening(self, n_coarse, seed) 
+            res = [WGC(self, n, seed) for n in n_coarse]
+            res = list(zip(*res))
         elif coarse_mode == 3: # Our Spectral Coarsening method 
             if is_seq: 
                 res = [KGPC(self, n, means_type, seed) for n in n_coarse] 
@@ -532,13 +554,18 @@ class MeasureNetwork:
                 res = KGPC(self, n_coarse, means_type, seed) 
         elif coarse_mode == 4: # Jin Spectral Coarsening 
             if is_seq: 
-                res = [spectral_graph_coarsening(self, n) for n in n_coarse] 
+                res = [SGC(self, n) for n in n_coarse] 
                 res = list(zip(*res)) # Ms and Qs 
             else:
-                res = spectral_graph_coarsening(self, n_coarse)
+                res = SGC(self, n_coarse)
 
         else:
             raise(ValueError)
+
+        if is_seq:
+            Ms, Qs = res
+            assert(len(Ms) == len(n_coarse) == len(Qs))
+            # assert()
 
         return res
 
